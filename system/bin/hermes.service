@@ -1,0 +1,62 @@
+#!/system/bin/sh
+# hermes.service — service control (start|stop|restart|status|log)
+H="/data/adb/hermes"
+LOG="$H/hermes.log"
+PID_FILE="$H/gateway.pid"
+
+is_running() {
+  [ -f "$PID_FILE" ] || return 1
+  PID=$(cat "$PID_FILE" 2>/dev/null)
+  [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null
+}
+
+do_stop() {
+  # stop gateway
+  if is_running; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null
+    rm -f "$PID_FILE"
+    echo "Gateway stopped"
+  else
+    echo "Gateway not running"
+  fi
+  # stop DoH proxy + remove iptables rules
+  pkill -f doh-proxy.py 2>/dev/null
+  iptables -t nat -D OUTPUT -p udp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null
+  iptables -t nat -D OUTPUT -p tcp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null
+  echo "DoH proxy stopped"
+  # stop dashboard — loader-spawned so process NAME is ld-linux*, but the full
+  # cmdline still contains "hermes dashboard" (verified on device)
+  pkill -f "hermes dashboard" 2>/dev/null
+  echo "Dashboard stopped"
+}
+
+case "${1:-status}" in
+  start)
+    if is_running; then
+      echo "Already running (PID $(cat "$PID_FILE"))"
+    else
+      sh /data/adb/modules/hermesandroid/service.sh
+    fi
+    ;;
+  stop)    do_stop ;;
+  restart) do_stop; sleep 1; sh /data/adb/modules/hermesandroid/service.sh ;;
+  status)
+    if is_running; then
+      echo "gateway: running (PID $(cat "$PID_FILE"))"
+    else
+      echo "gateway: stopped"
+    fi
+    if pgrep -f doh-proxy.py >/dev/null 2>&1; then
+      echo "doh-proxy: running"
+    else
+      echo "doh-proxy: stopped"
+    fi
+    if curl -fs --max-time 3 http://127.0.0.1:9119/ >/dev/null 2>&1; then
+      echo "dashboard: running (http://127.0.0.1:9119/)"
+    else
+      echo "dashboard: stopped"
+    fi
+    ;;
+  log)     tail -f "$LOG" ;;
+  *)       echo "Usage: hermes.service {start|stop|restart|status|log}" ;;
+esac

@@ -1,0 +1,4 @@
+#!/system/bin/sh
+# hermes wrapper — installed to /system/bin via Magisk overlay
+H="/data/adb/hermes"
+exec "$H/bin/hermes" "$@"

@@ -1,0 +1,3 @@
+#!/sbin/sh
+# Stub — KSU/Magisk handle install; customize.sh does the work
+exit 0
