@@ -7,6 +7,9 @@
 H="/data/adb/hermes"
 
 # Stop everything
+pkill -f 'hermes_cli.main dashboard' 2>/dev/null
+pkill -f 'hermes_cli.main gateway' 2>/dev/null
+pkill -f 'hermes dashboard' 2>/dev/null
 pkill -f doh-proxy.py 2>/dev/null
 iptables -t nat -D OUTPUT -p udp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null
 iptables -t nat -D OUTPUT -p tcp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null
@@ -23,6 +26,9 @@ rm -rf "$H/glibc"
 rm -rf "$H/python"
 rm -rf "$H/node"
 rm -rf "$H/source-1.2.0"
+rm -f "$H/current" "$H/current.new" "$H/previous-release"
+rm -rf "$H/releases" "$H/npm-cache"
+rm -f "$H/update.py" "$H/node-compat.cjs" "$H/release-sitecustomize.py" "$H/update.lock"
 rm -rf "$H/bin"
 rm -rf "$H/tmp"
 rm -rf "$H/ca-dir"

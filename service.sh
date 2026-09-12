@@ -64,7 +64,7 @@ echo "[$(ts)] iptables DNS redirect 53->$DOH_PORT" >> "$LOG"
 AUTOSTART=$(grep -o 'autostart=[a-z]*' "$H/settings.ini" 2>/dev/null | cut -d= -f2)
 [ "$AUTOSTART" = "false" ] && { echo "[$(ts)] autostart=false — skipping gateway" >> "$LOG"; exit 0; }
 
-# Dashboard (web UI on phone browser) — module bundles prebuilt web_dist,
+# Dashboard (web UI on phone browser) — updater builds web_dist before activation,
 # so --skip-build works without npm. Loopback bind; token is injected into
 # the SPA HTML automatically.
 DASH_PORT=9119

@@ -1,0 +1,8 @@
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.cjs text eol=lf
+*.prop text eol=lf
+system/bin/* text eol=lf
+META-INF/com/google/android/* text eol=lf
+*.gz binary

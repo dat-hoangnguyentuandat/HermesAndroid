@@ -2,7 +2,7 @@
 # ============================================================
 # HermesAndroid — customize.sh
 # Runs at flash time (root). Downloads CPython (python-build-standalone),
-# installs the bundled upstream Hermes source as an editable package.
+# downloads upstream Hermes and builds dashboard/TUI on the device.
 #
 # Order matters: CPython + CA bundle must exist BEFORE the DoH proxy
 # starts (the proxy itself runs on that interpreter), and pip needs the
@@ -270,72 +270,20 @@ else
   fi
 fi
 
-# ── Install upstream source (PyPI Hermes distribution is discontinued) ──
+# ── Build upstream source and isolated dependencies on this device ──
 export SSL_CERT_FILE="$INSTALL_DIR/ca-bundle.pem"
 export SSL_CERT_DIR="$INSTALL_DIR/ca-dir"
 export TMPDIR="$INSTALL_DIR/tmp"
 
-SOURCE_DIR="$INSTALL_DIR/source-1.2.0"
-[ -f "$MODPATH/hermes-source.tar.gz" ] || abort "Missing Hermes source bundle"
-mkdir -p "$SOURCE_DIR"
-tar -xzf "$MODPATH/hermes-source.tar.gz" -C "$SOURCE_DIR" || abort "Hermes source extraction failed"
-[ -f "$SOURCE_DIR/hermes_cli/web_dist/index.html" ] || abort "Missing bundled dashboard"
-[ -f "$SOURCE_DIR/hermes_cli/tui_dist/entry.js" ] || abort "Missing bundled TUI"
-ui_print "- Installing Hermes from bundled upstream source (several minutes)..."
-ATTEMPT=0
-INSTALL_OK=0
-while [ $ATTEMPT -lt 3 ]; do
-  ATTEMPT=$((ATTEMPT+1))
-  ui_print "  attempt $ATTEMPT/3..."
-  if "$INSTALL_DIR/bin/python" -m pip install \
-      --no-cache-dir --progress-bar off \
-      --timeout 120 --retries 5 \
-      --upgrade --editable "$SOURCE_DIR" >> "$LOG" 2>&1; then
-    INSTALL_OK=1
-    break
-  fi
-  log "pip attempt $ATTEMPT failed"
-  sleep 3
+for helper in update.py node-compat.cjs release-sitecustomize.py; do
+  cp "$MODPATH/hermes/$helper" "$INSTALL_DIR/$helper" || abort "Missing updater helper: $helper"
 done
-[ $INSTALL_OK -eq 1 ] || abort "Hermes source install failed after 3 attempts"
-# Confirm the old PyPI package is no longer the imported implementation.
-"$INSTALL_DIR/bin/python" -c 'import pathlib, sys, hermes_cli; assert pathlib.Path(hermes_cli.__file__).resolve().parent.parent == pathlib.Path(sys.argv[1]).resolve()' "$SOURCE_DIR" >> "$LOG" 2>&1 \
-  || abort "Hermes import still points outside the source installation"
-
-# Patch entry-point shebangs to use our loader wrapper
-for ep in hermes hermes-agent hermes-acp; do
-  [ -f "$PY_DIR/bin/$ep" ] && sed -i "1s|.*|#!/data/adb/hermes/bin/python|" "$PY_DIR/bin/$ep"
-done
-log "entry point shebangs patched"
-
-# ── Create hermes CLI wrapper ──────────────────────
-cat > "$INSTALL_DIR/bin/hermes" << 'HMWRAP'
-#!/system/bin/sh
-# HermesAndroid hermes wrapper
-H="/data/adb/hermes"
-export HOME="${HOME:-$H/home}"
-export TMPDIR="${TMPDIR:-$H/tmp}"
-export SSL_CERT_FILE="${SSL_CERT_FILE:-$H/ca-bundle.pem}"
-export SSL_CERT_DIR="${SSL_CERT_DIR:-$H/ca-dir}"
-export HERMES_HOME="${HERMES_HOME:-$H/home/.hermes}"
-export PYTHONUTF8=1
-# TUI (dashboard Chat tab / hermes --tui): prebuilt tui_dist/entry.js runs on
-# this node through the same glibc loader. HERMES_NODE wins over PATH.
-if [ -x "$H/node/bin/node" ]; then
-  export HERMES_NODE="$H/node/bin/node"
-  export PATH="$H/node/bin:$PATH"
-fi
-# The prebuilt TUI (tui_dist/entry.js shipped with the source) needs no npm and no
-# ui-tui workspace — skip any node-bootstrap attempt.
-export HERMES_SKIP_NODE_BOOTSTRAP=1
-# Android runtimes and source are managed together by the module installer.
-if [ "$1" = "update" ]; then
-  echo "HermesAndroid: flash the latest module ZIP in Magisk/KernelSU, then reboot."
-  exit 0
-fi
-exec "$H/bin/python" "$H/python/bin/hermes" "$@"
-HMWRAP
+cp "$MODPATH/hermes/launcher.sh" "$INSTALL_DIR/bin/hermes"
 chmod 755 "$INSTALL_DIR/bin/hermes"
+ui_print "- Downloading Hermes and building UI on this device..."
+ui_print "  This may take several minutes. Build log: $LOG"
+"$INSTALL_DIR/bin/python" "$INSTALL_DIR/update.py" --no-restart >> "$LOG" 2>&1 \
+  || abort "Hermes build failed; previous release preserved. See log."
 
 # ── Verify ─────────────────────────────────────────
 HM_VER=$("$INSTALL_DIR/bin/hermes" --version 2>&1) || abort "hermes version command failed: $HM_VER"

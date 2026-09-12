@@ -1,7 +1,7 @@
 id=hermesandroid
 name=HermesAndroid
-version=1.2.0
-versionCode=120
+version=1.0.0
+versionCode=100
 author=TDat
 description=Install Hermes Agent on Android Root via Magisk/KernelSU.
 updateJson=

@@ -19,6 +19,7 @@ do_stop() {
   else
     echo "Gateway not running"
   fi
+  pkill -f 'hermes_cli.main gateway' 2>/dev/null
   # stop DoH proxy + remove iptables rules
   pkill -f doh-proxy.py 2>/dev/null
   iptables -t nat -D OUTPUT -p udp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null
@@ -27,6 +28,7 @@ do_stop() {
   # stop dashboard — loader-spawned so process NAME is ld-linux*, but the full
   # cmdline still contains "hermes dashboard" (verified on device)
   pkill -f "hermes dashboard" 2>/dev/null
+  pkill -f 'hermes_cli.main dashboard' 2>/dev/null
   echo "Dashboard stopped"
 }
 
