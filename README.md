@@ -81,6 +81,5 @@ button start services. See `/data/adb/hermes/install.log` for installation error
 
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent), Nous Research.
 - [python-build-standalone](https://github.com/astral-sh/python-build-standalone).
-- GlibClaw's glibc-loader approach for rooted Android.
 
 MIT © TDat
