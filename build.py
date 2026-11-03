@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 import stat
+import tarfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
@@ -17,6 +18,10 @@ def main():
     bundle = ROOT / "glibc.tar.gz"
     if not bundle.is_file():
         raise FileNotFoundError("Missing bundled glibc.tar.gz; use a complete repository checkout")
+    with tarfile.open(bundle) as runtime:
+        atomic = runtime.extractfile("lib/libatomic.so.1").read()
+        if atomic[:4] != b"\x7fELF" or int.from_bytes(atomic[18:20], "little") != 183:
+            raise ValueError("Node 26 requires an AArch64 libatomic.so.1 in glibc.tar.gz")
     OUTPUT.mkdir(exist_ok=True)
     output = OUTPUT / f"HermesAndroid-v{version}.zip"
     temporary = output.with_suffix(".zip.tmp")

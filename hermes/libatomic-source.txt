@@ -1,0 +1,7 @@
+libatomic.so.1 (AArch64), Debian GCC 12 runtime
+Source package: gcc-12 12.2.0-14+deb12u1
+Binary URL: https://deb.debian.org/debian/pool/main/g/gcc-12/libatomic1_12.2.0-14+deb12u1_arm64.deb
+Debian archive SHA256: 1693aa13ce2b30d061a519fc28b77b9bab8c8e45804ced5969d99821e1bc2159
+Library SHA256: c90c21008853899dfa102eeaa43b703c2bf41553dd56b13aac6da2803d5884b7
+License: GPL-3 with GCC Runtime Library Exception; see glibc/licenses/libatomic1-copyright
+Corresponding source: https://deb.debian.org/debian/pool/main/g/gcc-12/

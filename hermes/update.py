@@ -29,7 +29,7 @@ def say(message):
 
 
 def fetch(url, destination=None):
-    req = urllib.request.Request(url, headers={"User-Agent": "HermesAndroid/1.0.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "HermesAndroid/1.0.1"})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
@@ -104,11 +104,82 @@ export HERMES_PY_WRAPPER="{release}/bin/python"
 export PYTHONPATH="{release}/compat:{release}/source:{release}/packages"
 export PIP_TARGET="{release}/packages"
 export PYTHONUTF8=1
-exec "{H}/glibc/lib/ld-linux-aarch64.so.1" --library-path "{H}/glibc/lib" "{H}/python/bin/python3.12" "$@"
+exec "{H}/glibc/lib/ld-linux-aarch64.so.1" --library-path "{H}/glibc/lib" "{H}/python/bin/python3.14" "$@"
 ''')
 
 
+def lock_overrides(source):
+    lock = tomllib.loads((source / "uv.lock").read_text(encoding="utf-8"))
+    lines = []
+    for entry in lock.get("manifest", {}).get("overrides", []):
+        if set(entry) - {"name", "specifier", "marker"}:
+            raise RuntimeError(f"Unsupported upstream dependency override: {entry}")
+        line = entry["name"] + entry.get("specifier", "")
+        if entry.get("marker"):
+            line += " ; " + entry["marker"]
+        lines.append(line)
+    return lines
+
+
+def check_dependencies(release):
+    """Validate installed metadata with the exact overrides used by upstream."""
+    from importlib.metadata import distributions
+    from pip._vendor.packaging.requirements import Requirement
+    from pip._vendor.packaging.utils import canonicalize_name
+
+    packages = list(distributions(path=[str(release / "packages")]))
+    installed = {canonicalize_name(dist.metadata["Name"]): dist.version for dist in packages}
+    overrides = {canonicalize_name(req.name): req for req in
+                 map(Requirement, lock_overrides(release / "source"))}
+    errors = []
+    for dist in packages:
+        for line in dist.requires or []:
+            requirement = Requirement(line)
+            if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+                continue
+            name = canonicalize_name(requirement.name)
+            requirement = overrides.get(name, requirement)
+            if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+                continue
+            version = installed.get(name)
+            if version is None or version not in requirement.specifier:
+                errors.append(f"{dist.metadata['Name']} requires {requirement}; installed: {version}")
+    if errors:
+        raise RuntimeError("Dependency validation failed:\n" + "\n".join(errors))
+    say("Python dependencies verified with upstream lock overrides")
+
+
+def install_dependencies(source, release, env):
+    tools = release / "build-tools"
+    say("Installing uv resolver for upstream lockfile...")
+    run([H / "bin/python", "-m", "pip", "install", "--ignore-installed", "--no-cache-dir",
+         "--only-binary=:all:", "--target", tools, "uv==0.13.7"], env=env)
+    uv = [H / "glibc/lib/ld-linux-aarch64.so.1", "--library-path", H / "glibc/lib", tools / "bin/uv"]
+    uv_env = env.copy()
+    uv_env.update(UV_PYTHON_DOWNLOADS="never", UV_CACHE_DIR=str(H / "uv-cache"),
+                  UV_HTTP_TIMEOUT="120", UV_NO_PROGRESS="1")
+    requirements = release / "requirements.txt"
+    overrides = release / "overrides.txt"
+    overrides.write_text("\n".join(lock_overrides(source)) + "\n", encoding="utf-8")
+    run(uv + ["export", "--frozen", "--no-dev", "--no-default-groups", "--no-emit-project",
+              "--no-hashes", "--no-annotate", "--format", "requirements-txt",
+              "--output-file", requirements], cwd=source, env=uv_env)
+    # The export keeps upstream versions; overrides also resolve intentional
+    # metadata mismatches such as browser-harness's older Pillow pin.
+    run(uv + ["pip", "install", "--python", release / "bin/python", "--target", release / "packages",
+              "--override", overrides, "--requirements", requirements, "pip"],
+        cwd=source, env=uv_env)
+    # Use the bootstrap interpreter for editable metadata. Release isolation
+    # hides site-packages, including uv's temporary setuptools build environment.
+    run([H / "bin/python", "-m", "pip", "install", "--ignore-installed", "--no-cache-dir",
+         "--no-deps", "--target", release / "packages", "--editable", source], env=env)
+
+
 def build_release(release, sha, ref):
+    # Upstream permits older Python only to bootstrap its runtime migration;
+    # its core dependencies are gated on Python >= 3.14.
+    if sys.version_info < (3, 14):
+        raise RuntimeError("Hermes requires the module's Python 3.14 runtime; reflash the updated module ZIP first")
     if shutil.disk_usage(H).free < 2 * 1024 ** 3:
         raise RuntimeError("At least 2 GB free on /data is required for a new build")
     release.mkdir()
@@ -145,18 +216,19 @@ def build_release(release, sha, ref):
     # Official launcher supports this prebuilt location. Keep the source workspace too.
     shutil.copytree(source / "ui-tui/dist", source / "hermes_cli/tui_dist", dirs_exist_ok=True)
     say("Installing isolated Python dependencies...")
-    run([H / "bin/python", "-m", "pip", "install", "--ignore-installed", "--no-cache-dir",
-         "--progress-bar", "off", "--timeout", "120", "--retries", "5",
-         "--target", release / "packages", "--editable", source, "pip"], env=env)
+    install_dependencies(source, release, env)
     for entry in (release / "packages/bin").glob("*"):
         if entry.is_file() and entry.read_bytes().startswith(b"#!"):
             contents = entry.read_bytes().split(b"\n", 1)
             if b"python" in contents[0]:
                 entry.write_bytes(f"#!{release}/bin/python\n".encode() + contents[1])
     say("Checking Python imports and built assets...")
-    run([release / "bin/python", "-c", "import hermes_cli, fastapi, openai, yaml; from hermes_cli import web_server"], cwd=release, env=env, timeout=120)
+    run([release / "bin/python", "-c", "import hermes_cli, fastapi, openai; from hermes_cli import web_server"], cwd=release, env=env, timeout=120)
     run([release / "bin/python", "-m", "hermes_cli.main", "--version"], cwd=release, env=env, timeout=60)
-    run([release / "bin/python", "-m", "pip", "check"], cwd=release, env=env, timeout=60)
+    run([release / "bin/python", "-c",
+         "import runpy; from pathlib import Path; "
+         f"runpy.run_path({str(H / 'update.py')!r})['check_dependencies'](Path({str(release)!r}))"],
+        cwd=release, env=env, timeout=60)
     run([H / "node/bin/node", "--check", source / "hermes_cli/tui_dist/entry.js"], env=env, timeout=60)
     (release / ".ready").write_text(json.dumps({"commit": sha, "ref": ref, "built_at": time.time()}))
 

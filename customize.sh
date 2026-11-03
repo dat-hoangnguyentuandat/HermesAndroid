@@ -20,11 +20,11 @@ DOH_PORT=5353
 
 # Pinned fallback: astral-sh/python-build-standalone (aarch64 glibc, stripped)
 PBS_REPO="https://github.com/astral-sh/python-build-standalone"
-PBS_FALLBACK_TAG="20260901"
-PBS_FALLBACK_ASSET="cpython-3.12.14+20260901-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+PBS_FALLBACK_TAG="20261026"
+PBS_FALLBACK_ASSET="cpython-3.14.10+20261026-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
 PBS_BASE_URL="${PBS_BASE_URL:-$PBS_REPO/releases/download}"
 
-abort() { ui_print ""; ui_print "ERROR: $1"; ui_print "Log: $LOG"; exit 1; }
+abort() { log "ERROR: $1"; ui_print ""; ui_print "ERROR: $1"; ui_print "Log: $LOG"; exit 1; }
 log()   { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG"; }
 
 ui_print ""
@@ -36,12 +36,14 @@ ui_print "        Hermes Agent for rooted Android (aarch64)"
 ui_print ""
 
 mkdir -p "$INSTALL_DIR"
+exec 2>>"$LOG"
 log "===== Install start ====="
+log "module version: $(sed -n 's/^version=//p' "$MODPATH/module.prop")"
 
 # ── fetch util (curl or busybox wget) ──────────────
 fetch() { # fetch URL OUT
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 3 --retry-delay 2 "$1" -o "$2"
+    curl -fL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 2 "$1" -o "$2"
   elif command -v busybox >/dev/null 2>&1; then
     busybox wget --no-check-certificate -O "$2" "$1"
   else
@@ -56,7 +58,7 @@ log "arch: $ARCH OK"
 
 # ── Detect upgrade ─────────────────────────────────
 IS_UPGRADE=false
-if [ -x "$INSTALL_DIR/bin/python" ] && [ -f "$PY_DIR/bin/python3.12" ]; then
+if [ -x "$INSTALL_DIR/bin/python" ] && [ -f "$PY_DIR/bin/python3.14" ]; then
   IS_UPGRADE=true
   ui_print "- Upgrade mode — preserving existing CPython runtime"
   log "upgrade detected, python runtime preserved"
@@ -95,7 +97,7 @@ export PYTHONUTF8=1
 export HERMES_PY_WRAPPER="$H/bin/python"
 exec "$H/glibc/lib/ld-linux-aarch64.so.1" \
      --library-path "$H/glibc/lib" \
-     "$H/python/bin/python3.12" "$@"
+     "$H/python/bin/python3.14" "$@"
 PYWRAP
 chmod 755 "$INSTALL_DIR/bin/python"
 
@@ -134,7 +136,7 @@ fi
 
 # ── Download + extract CPython ─────────────────────
 if [ "$IS_UPGRADE" = false ]; then
-  ui_print "- Detecting latest python-build-standalone 3.12..."
+  ui_print "- Detecting latest python-build-standalone 3.14..."
   PBS_ASSET=""
   PBS_TAG=""
   if command -v curl >/dev/null 2>&1; then
@@ -142,7 +144,7 @@ if [ "$IS_UPGRADE" = false ]; then
       | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
     if [ -n "$PBS_TAG" ]; then
       PBS_ASSET=$(curl -fsSL --max-time 15 "$PBS_REPO/releases/expanded_assets/$PBS_TAG" 2>/dev/null \
-        | grep -o 'cpython-3\.12[^"]*aarch64-unknown-linux-gnu-install_only_stripped\.tar\.gz' | head -1)
+        | grep -o 'cpython-3\.14[^"]*aarch64-unknown-linux-gnu-install_only_stripped\.tar\.gz' | head -1)
     fi
   fi
   if [ -z "$PBS_ASSET" ]; then
@@ -166,7 +168,7 @@ if [ "$IS_UPGRADE" = false ]; then
   tar -xzf "$INSTALL_DIR/tmp/pbs.tar.gz" -C "$PY_DIR" --strip-components=1 || abort "CPython extraction failed"
   rm -f "$INSTALL_DIR/tmp/pbs.tar.gz"
   chmod 755 "$PY_DIR/bin/"* 2>/dev/null
-  [ -f "$PY_DIR/bin/python3.12" ] || abort "python3.12 not found after extraction"
+  [ -f "$PY_DIR/bin/python3.14" ] || abort "python3.14 not found after extraction"
 
   # Smoke test
   PY_VER=$("$INSTALL_DIR/bin/python" --version 2>&1) || abort "Python smoke test failed: $PY_VER"
@@ -182,24 +184,38 @@ fi
 #  tui_dist/entry.js bundled with the source via `node --expose-gc`)
 # ════════════════════════════════════════════════════
 NODE_DIR="$INSTALL_DIR/node"
-NODE_FALLBACK="v22.22.0"
-if [ "$IS_UPGRADE" = false ] || [ ! -x "$NODE_DIR/bin/node" ]; then
-  ui_print "- Detecting latest Node.js 22 LTS..."
+NODE_FALLBACK="v26.13.0"
+log "Checking Node.js runtime"
+# Check Node independently of Python: reflashing must migrate old Node installs.
+NODE_COMPATIBLE=false
+if [ -x "$NODE_DIR/bin/node" ]; then
+  "$NODE_DIR/bin/node" -e '
+    const node = Number(process.versions.node.split(".")[0]);
+    const npm = require("/data/adb/hermes/node/lib/node_modules/npm/package.json").version.split(".").map(Number);
+    const npmOK = npm[0] < 11 || (npm[0] === 11 && npm[1] < 10) || npm[0] > 11 || (npm[0] === 11 && npm[1] >= 17);
+    process.exit(node >= 26 && npmOK ? 0 : 1);
+  ' >/dev/null 2>&1 && NODE_COMPATIBLE=true
+fi
+if [ "$NODE_COMPATIBLE" = false ]; then
+  log "Installing Node.js 26 (existing runtime missing or incompatible)"
+  ui_print "- Detecting latest Node.js 26..."
   NODE_VERSION=""
   if command -v curl >/dev/null 2>&1; then
     NODE_VERSION=$(curl -fsSL --max-time 15 https://nodejs.org/dist/index.json 2>/dev/null \
-      | grep -o '"v22\.[0-9]*\.[0-9]*"' | head -1 | tr -d '"')
+      | grep -o '"v26\.[0-9]*\.[0-9]*"' | head -1 | tr -d '"')
   fi
   [ -n "$NODE_VERSION" ] || { NODE_VERSION="$NODE_FALLBACK"; ui_print "  fallback: $NODE_VERSION"; }
   ui_print "  using Node.js $NODE_VERSION"
 
   NODE_ARCHIVE="node-$NODE_VERSION-linux-arm64.tar.gz"
-  ui_print "- Downloading Node.js (~30 MB)..."
+  ui_print "- Downloading Node.js (~60 MB)..."
+  log "downloading: https://nodejs.org/dist/$NODE_VERSION/$NODE_ARCHIVE"
   fetch "https://nodejs.org/dist/$NODE_VERSION/$NODE_ARCHIVE" "$INSTALL_DIR/tmp/$NODE_ARCHIVE" \
     || abort "Failed to download Node.js"
 
   rm -rf "$NODE_DIR"
   mkdir -p "$NODE_DIR"
+  log "Extracting Node.js $NODE_VERSION"
   tar -xzf "$INSTALL_DIR/tmp/$NODE_ARCHIVE" -C "$NODE_DIR" || abort "Node.js extraction failed"
   # flatten top-level dir (node-vX.Y.Z-linux-arm64/)
   NODE_TOP=$(ls -d "$NODE_DIR"/node-v*-linux-arm64 2>/dev/null | head -1)
@@ -225,6 +241,7 @@ exec "$H/glibc/lib/ld-linux-aarch64.so.1" \
 NODEWRAP
   chmod 755 "$NODE_DIR/bin/node"
 
+  log "Checking Node.js executable"
   NODE_VER=$("$NODE_DIR/bin/node" --version 2>&1) || abort "Node smoke test failed: $NODE_VER"
   log "node OK: $NODE_VER"
   ui_print "- Node.js $NODE_VER ready"
@@ -234,7 +251,7 @@ else
 fi
 
 # ── Install sitecustomize into stdlib ──────────────
-cp "$INSTALL_DIR/sitecustomize.py" "$PY_DIR/lib/python3.12/sitecustomize.py"
+cp "$INSTALL_DIR/sitecustomize.py" "$PY_DIR/lib/python3.14/sitecustomize.py"
 log "sitecustomize installed"
 
 # ════════════════════════════════════════════════════

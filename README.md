@@ -3,9 +3,19 @@
 Magisk/KernelSU module for rooted aarch64 Android. Runs upstream Hermes through
 bundled glibc with CPython and Node.js. No Termux or proot required.
 
+CPython 3.14 is required: current upstream releases gate their runtime
+dependencies on Python 3.14 even though package metadata permits older Python
+for migration. Reflash this module to replace an existing Python 3.12 runtime;
+then retry installation or `hermes update`.
+
+The installer also upgrades Node.js to 26 when the existing runtime does not
+meet the Node/npm requirements of current Hermes releases.
+The bundled Linux libraries include the AArch64 `libatomic.so.1` required by
+Node 26. Its source and license details are in `hermes/libatomic-source.txt`.
+
 ## Install
 
-1. Download `HermesAndroid-v1.0.0.zip` from [Releases](https://github.com/dat-hoangnguyentuandat/HermesAndroid/releases/latest), or run `python build.py` from this repository to build it in the sibling `version/` directory.
+1. Download `HermesAndroid-v1.0.1.zip` from [Releases](https://github.com/dat-hoangnguyentuandat/HermesAndroid/releases/latest), or run `python build.py` from this repository to build it in the sibling `version/` directory.
 2. Flash in Magisk/KernelSU with an Internet connection, then reboot.
 3. Open the Action button or `http://127.0.0.1:9119/`.
 
@@ -13,6 +23,9 @@ The ZIP contains scripts and glibc, not Hermes source or UI. Installation downlo
 CPython/Node, resolves GitHub's latest Hermes release to an exact commit, downloads
 its source and builds dashboard/TUI on the phone using upstream's lockfile and build
 scripts. Python dependencies are isolated per revision. No upstream source patches.
+Python packages are installed with uv from upstream's frozen `uv.lock`, including
+its declared dependency overrides. Metadata validation applies those same
+overrides and still rejects missing or incompatible dependencies.
 
 Allow several minutes, a stable connection and at least 3 GB free on `/data` for
 builds, caches and rollback. A tested revision uses about 760 MB including source,

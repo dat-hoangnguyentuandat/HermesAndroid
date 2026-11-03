@@ -1,6 +1,6 @@
 # HermesAndroid sitecustomize — fix interpreter identity under glibc loader.
 #
-# CPython runs as:  ld-linux-aarch64.so.1 --library-path <glibc> python3.12 ...
+# CPython runs as:  ld-linux-aarch64.so.1 --library-path <glibc> python3.14 ...
 # so /proc/self/exe and sys.executable point at the LOADER, not python.
 # subprocess/pip/venv keyed on sys.executable break. This repoints them at
 # the wrapper script, which re-enters through the loader correctly.

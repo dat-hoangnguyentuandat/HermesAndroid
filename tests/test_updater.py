@@ -1,6 +1,9 @@
 import importlib.util
+import hashlib
 import io
+import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -83,6 +86,102 @@ class UpdateTests(unittest.TestCase):
         self.assertNotIn("HERMES_RELEASE", env)
         self.assertNotIn("PIP_TARGET", env)
         self.assertEqual(env["npm_config_script_shell"], "/system/bin/sh")
+
+    def test_old_python_fails_before_downloading_or_creating_release(self):
+        release = self.releases / "new"
+        with patch.object(updater.sys, "version_info", (3, 12, 16)), \
+             patch.object(updater, "fetch") as fetch:
+            with self.assertRaisesRegex(RuntimeError, "Python 3.14.*reflash"):
+                updater.build_release(release, "a" * 40, "test")
+        fetch.assert_not_called()
+        self.assertFalse(release.exists())
+
+    def test_installer_and_release_wrapper_use_same_python(self):
+        release = self.releases / "new"
+        release.mkdir()
+        (self.h / "release-sitecustomize.py").write_text("# compat")
+        updater.release_python(release)
+        wrapper = (release / "bin/python").read_text()
+        installer = (ROOT / "customize.sh").read_text(encoding="utf-8")
+        self.assertIn("python/bin/python3.14", wrapper)
+        self.assertIn('"$PY_DIR/bin/python3.14"', installer)
+        self.assertIn('"$H/python/bin/python3.14"', installer)
+        self.assertIn('"$PY_DIR/lib/python3.14/sitecustomize.py"', installer)
+        self.assertNotIn("3.12", installer)
+
+    def test_bundled_libatomic_is_aarch64_and_matches_provenance(self):
+        with tarfile.open(ROOT / "glibc.tar.gz") as bundle:
+            library = bundle.extractfile("lib/libatomic.so.1").read()
+            license_text = bundle.extractfile("licenses/libatomic1-copyright").read()
+        self.assertEqual(library[:6], b"\x7fELF\x02\x01")
+        self.assertEqual(int.from_bytes(library[18:20], "little"), 183)
+        provenance = (ROOT / "hermes/libatomic-source.txt").read_text()
+        self.assertIn(hashlib.sha256(library).hexdigest(), provenance)
+        self.assertIn(b"RUNTIME LIBRARY EXCEPTION", license_text.upper())
+
+    def test_dependency_check_honors_lock_overrides_but_rejects_missing_packages(self):
+        release = self.releases / "new"
+        source = release / "source"
+        source.mkdir(parents=True)
+        (source / "uv.lock").write_text(
+            '[manifest]\noverrides = [{name="pillow", specifier="==13.0.0"}]\n')
+        packages = [types.SimpleNamespace(metadata={"Name": "browser-harness"}, version="0.1.13",
+                                          requires=["pillow==12.3.0"]),
+                    types.SimpleNamespace(metadata={"Name": "Pillow"}, version="13.0.0", requires=[])]
+        with patch("importlib.metadata.distributions", return_value=packages):
+            updater.check_dependencies(release)
+            packages[1].version = "12.3.0"
+            with self.assertRaisesRegex(RuntimeError, "pillow==13.0.0"):
+                updater.check_dependencies(release)
+            packages[1].version = "13.0.0"
+            packages[0].requires.append("missing-package>=1")
+            with self.assertRaisesRegex(RuntimeError, "missing-package"):
+                updater.check_dependencies(release)
+
+    def test_install_uses_frozen_lock_and_overrides(self):
+        release = self.releases / "new"
+        source = release / "source"
+        source.mkdir(parents=True)
+        (source / "uv.lock").write_text(
+            '[manifest]\noverrides = [{name="pillow", specifier="==13.0.0"}]\n')
+        with patch.object(updater, "run") as run:
+            updater.install_dependencies(source, release, {})
+        export = run.call_args_list[1].args[0]
+        install = run.call_args_list[2].args[0]
+        self.assertIn("--frozen", export)
+        self.assertIn("--no-emit-project", export)
+        self.assertIn("--override", install)
+        self.assertIn("--requirements", install)
+        self.assertNotIn("--no-deps", install)
+        editable = run.call_args_list[3].args[0]
+        self.assertEqual(editable[0], self.h / "bin/python")
+        self.assertIn("--no-deps", editable)
+        self.assertIn("--editable", editable)
+        self.assertEqual((release / "overrides.txt").read_text(), "pillow==13.0.0\n")
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed to verify installer compatibility checks")
+    def test_installer_migrates_old_node_and_incompatible_npm(self):
+        installer = (ROOT / "customize.sh").read_text(encoding="utf-8")
+        script = installer.split('"$NODE_DIR/bin/node" -e \'', 1)[1].split("' >/dev/null", 1)[0]
+        harness = """
+const vm = require('node:vm');
+const script = JSON.parse(process.argv[1]);
+for (const [node, npm, expected] of [
+    ['22.23.4', '10.9.9', 1], ['26.13.0', '11.20.0', 0],
+    ['26.0.0', '11.10.0', 1], ['26.0.0', '11.16.0', 1],
+    ['26.0.0', '11.17.0', 0], ['26.0.0', '10.9.9', 0],
+    ['26.0.0', '12.0.0', 0]]) {
+    let result;
+    vm.runInNewContext(script, {
+        process: {versions: {node}, exit: code => {result = code;}},
+        require: () => ({version: npm})
+    });
+    if (result !== expected) throw Error(`Unexpected result for ${node}/${npm}`);
+}
+"""
+        subprocess.run([shutil.which("node"), "-e", harness, json.dumps(script)], check=True)
+        self.assertIn('if [ "$NODE_COMPATIBLE" = false ]; then', installer)
+        self.assertNotIn('"v22\\.', installer)
 
 
 if __name__ == "__main__":
